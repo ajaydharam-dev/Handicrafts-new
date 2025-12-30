@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { searchProducts, getTrendingProducts } from '@/lib/searchUtils';
-import { Product } from '@/data/categories';
+import { Product, formatPrice } from '@/data/categories';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { Button } from '@/components/ui/button';
@@ -12,12 +12,14 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { Star, ShoppingBag, Heart, Filter, X } from 'lucide-react';
 import { useWishlist } from '@/contexts/WishlistContext';
-import { categories } from '@/data/categories';
+import { categoryService } from '@/services/firestoreService';
+import { Category } from '@/data/categories';
 
 const SearchPage = () => {
   const [searchParams] = useSearchParams();
   const query = searchParams.get('q') || '';
   const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState({
     categoryId: undefined as number | undefined,
@@ -29,14 +31,30 @@ const SearchPage = () => {
   const { isInWishlist, toggleWishlist } = useWishlist();
 
   useEffect(() => {
-    if (query) {
-      const results = searchProducts(query, filters);
-      setProducts(results);
-    } else {
-      // Show trending products when search is empty
-      const trending = getTrendingProducts();
-      setProducts(trending);
-    }
+    const fetchCategories = async () => {
+      try {
+        const cats = await categoryService.getAll();
+        setCategories(cats);
+      } catch (error) {
+        console.error('Error fetching categories:', error);
+      }
+    };
+    fetchCategories();
+  }, []);
+
+  useEffect(() => {
+    const fetchProducts = async () => {
+      if (query) {
+        const results = await searchProducts(query, filters);
+        setProducts(results);
+      } else {
+        // Show trending products when search is empty
+        const trending = await getTrendingProducts();
+        setProducts(trending);
+      }
+    };
+
+    fetchProducts();
   }, [query, filters]);
 
   const handleFilterChange = (key: string, value: any) => {
@@ -155,8 +173,8 @@ const SearchPage = () => {
                         className="w-full"
                       />
                       <div className="flex justify-between text-sm text-muted-foreground">
-                        <span>${filters.minPrice}</span>
-                        <span>${filters.maxPrice}</span>
+                        <span>{formatPrice(filters.minPrice)}</span>
+                        <span>{formatPrice(filters.maxPrice)}</span>
                       </div>
                     </div>
                   </div>
@@ -247,9 +265,22 @@ const SearchPage = () => {
                               <span className="text-sm font-medium">{product.rating}</span>
                               <span className="text-sm text-muted-foreground">({product.reviews})</span>
                             </div>
-                            <p className="text-xl font-semibold text-foreground">
-                              ${product.price.toFixed(2)}
-                            </p>
+                            <div className="flex items-center gap-2">
+                              {product.discountPrice ? (
+                                <>
+                                  <p className="text-xl font-semibold text-foreground">
+                                    {formatPrice(product.discountPrice)}
+                                  </p>
+                                  <p className="text-sm text-muted-foreground line-through">
+                                    {formatPrice(product.price)}
+                                  </p>
+                                </>
+                              ) : (
+                                <p className="text-xl font-semibold text-foreground">
+                                  {formatPrice(product.price)}
+                                </p>
+                              )}
+                            </div>
                           </div>
                           <button
                             onClick={(e) => {

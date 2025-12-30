@@ -11,7 +11,8 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { categories } from "@/data/categories";
+import { categoryService } from "@/services/firestoreService";
+import { Category } from "@/data/categories";
 import { useStore } from "@/contexts/StoreContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useWishlist } from "@/contexts/WishlistContext";
@@ -28,6 +29,7 @@ const Header = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestions, setSuggestions] = useState<{ type: 'product' | 'category'; name: string; id: number; image?: string }[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const { selectedStore, setShowStoreSelector } = useStore();
   const { user, logout, isAdmin } = useAuth();
   const { wishlist } = useWishlist();
@@ -35,6 +37,18 @@ const Header = () => {
   const cartCount = getItemCount();
   const navigate = useNavigate();
   const location = useLocation();
+
+  useEffect(() => {
+    const fetchCategories = async () => {
+      try {
+        const cats = await categoryService.getAll();
+        setCategories(cats);
+      } catch (error) {
+        console.error('Error fetching categories:', error);
+      }
+    };
+    fetchCategories();
+  }, []);
 
   // Sync search query with URL when on search page
   useEffect(() => {
@@ -47,15 +61,18 @@ const Header = () => {
 
   // Update suggestions as user types (only if dropdown is open)
   useEffect(() => {
-    if (showSuggestions) {
-      const newSuggestions = getSearchSuggestions(searchQuery);
-      setSuggestions(newSuggestions);
-    }
+    const fetchSuggestions = async () => {
+      if (showSuggestions) {
+        const newSuggestions = await getSearchSuggestions(searchQuery);
+        setSuggestions(newSuggestions);
+      }
+    };
+    fetchSuggestions();
   }, [searchQuery, showSuggestions]);
 
-  const handleSearchClick = () => {
+  const handleSearchClick = async () => {
     // Show trending products when clicking on search bar
-    const newSuggestions = getSearchSuggestions('');
+    const newSuggestions = await getSearchSuggestions('');
     setSuggestions(newSuggestions);
     setShowSuggestions(true);
   };
@@ -89,29 +106,29 @@ const Header = () => {
     <header className="sticky top-0 z-50 w-full bg-card shadow-soft">
       <div className="container mx-auto px-4">
         <div className="flex h-20 items-center justify-between gap-8">
-          {/* Logo */}
+          {/* Logo - Desktop: Logo + Name, Mobile: Logo only */}
           <Link to="/" className="flex-shrink-0 flex items-center gap-3">
             <img 
               src="/assets/logo/logo.png" 
               alt="Damodar Handicrafts Logo" 
               className="w-12 h-12 rounded-full object-cover border-2 border-border"
             />
-            <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground">
+            <h1 className="hidden md:block font-display text-2xl font-semibold tracking-tight text-foreground">
               Damodar Handicrafts
             </h1>
           </Link>
 
-          {/* Store Location */}
+          {/* Store Location - Desktop: Full button, Mobile: Compact */}
           <button
             onClick={() => setShowStoreSelector(true)}
-            className="hidden md:flex items-center gap-2 px-4 py-2 rounded-lg hover:bg-secondary transition-colors text-foreground group"
+            className="flex items-center gap-2 px-2 md:px-4 py-2 rounded-lg hover:bg-secondary transition-colors text-foreground group"
             title="Change store location"
           >
             <MapPin className="h-4 w-4 text-primary" />
             <span className="text-sm font-medium">
               {selectedStore ? selectedStore.city : "Select Store"}
             </span>
-            <ChevronDown className="h-4 w-4 text-muted-foreground group-hover:text-foreground transition-colors" />
+            <ChevronDown className="hidden md:block h-4 w-4 text-muted-foreground group-hover:text-foreground transition-colors" />
           </button>
 
           {/* Categories Dropdown */}
@@ -121,37 +138,41 @@ const Header = () => {
               <ChevronDown className="h-4 w-4" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-64">
-              {categories.map((category) => {
-                const IconComponent = getIcon(category.iconName);
-                return (
-                  <DropdownMenuSub key={category.id}>
-                    <DropdownMenuSubTrigger>
-                      <IconComponent className="h-4 w-4 mr-2" />
-                      {category.name}
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent>
-                      {category.subcategories.map((subcategory) => (
-                        <DropdownMenuItem key={subcategory.id} asChild>
+              {categories && categories.length > 0 ? (
+                categories.map((category) => {
+                  const IconComponent = getIcon(category.iconName);
+                  return (
+                    <DropdownMenuSub key={category.id}>
+                      <DropdownMenuSubTrigger>
+                        <IconComponent className="h-4 w-4 mr-2" />
+                        {category.name}
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent>
+                        {category.subcategories && category.subcategories.map((subcategory) => (
+                          <DropdownMenuItem key={subcategory.id} asChild>
+                            <Link
+                              to={`/category/${category.id}/subcategory/${subcategory.id}`}
+                              className="cursor-pointer"
+                            >
+                              {subcategory.name}
+                            </Link>
+                          </DropdownMenuItem>
+                        ))}
+                        <DropdownMenuItem asChild>
                           <Link
-                            to={`/category/${category.id}/subcategory/${subcategory.id}`}
-                            className="cursor-pointer"
+                            to={`/category/${category.id}`}
+                            className="cursor-pointer font-semibold"
                           >
-                            {subcategory.name}
+                            View All {category.name}
                           </Link>
                         </DropdownMenuItem>
-                      ))}
-                      <DropdownMenuItem asChild>
-                        <Link
-                          to={`/category/${category.id}`}
-                          className="cursor-pointer font-semibold"
-                        >
-                          View All {category.name}
-                        </Link>
-                      </DropdownMenuItem>
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                );
-              })}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  );
+                })
+              ) : (
+                <DropdownMenuItem disabled>Loading categories...</DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
 

@@ -11,6 +11,10 @@ import {
   ConfirmationResult,
   updateProfile,
   sendPasswordResetEmail,
+  updatePassword,
+  linkWithCredential,
+  PhoneAuthProvider,
+  EmailAuthProvider,
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, query, where, getDocs, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db, googleProvider } from '@/lib/firebase';
@@ -68,11 +72,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
         const userObj: User = {
           id: firebaseUser.uid,
-          email: firebaseUser.email || undefined,
-          phone: firebaseUser.phoneNumber || undefined,
+          email: firebaseUser.email || userData?.email || undefined,
+          // Get phone from Firestore first (for phone signups), then fallback to Firebase Auth phoneNumber
+          phone: userData?.phone || firebaseUser.phoneNumber || undefined,
           name: userData?.name || firebaseUser.displayName || 'User',
           role: userData?.role || 'user',
-          photoURL: firebaseUser.photoURL || undefined,
+          photoURL: firebaseUser.photoURL || userData?.photoURL || undefined,
         };
 
         setUser(userObj);
@@ -89,17 +94,68 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   // Initialize recaptcha verifier
   const initializeRecaptcha = (): RecaptchaVerifier => {
-    if (!recaptchaVerifier) {
+    // Clean up existing verifier if any
+    if (recaptchaVerifier) {
+      try {
+        recaptchaVerifier.clear();
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+      recaptchaVerifier = null;
+    }
+
+    // Remove any existing container to ensure clean state
+    const existingContainer = document.getElementById('recaptcha-container');
+    if (existingContainer) {
+      existingContainer.remove();
+    }
+
+    // Create a new container - must be in DOM and accessible for invisible reCAPTCHA
+    const container = document.createElement('div');
+    container.id = 'recaptcha-container';
+    // For invisible reCAPTCHA, container should exist but can be hidden
+    // Using a more standard approach that Firebase recognizes
+    container.style.cssText = 'position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden;';
+    document.body.appendChild(container);
+
+    // Create new verifier with proper configuration
+    try {
       recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
         size: 'invisible',
         callback: () => {
           // reCAPTCHA solved
+          console.log('reCAPTCHA verified');
         },
         'expired-callback': () => {
-          // Response expired
+          // Response expired - need to re-verify
+          console.log('reCAPTCHA expired');
+          if (recaptchaVerifier) {
+            try {
+              recaptchaVerifier.clear();
+            } catch (e) {
+              // Ignore cleanup errors
+            }
+            recaptchaVerifier = null;
+          }
         },
       });
+    } catch (error: any) {
+      console.error('reCAPTCHA initialization error:', error);
+      // Clean up container on error
+      if (container && container.parentNode) {
+        container.parentNode.removeChild(container);
+      }
+      if (recaptchaVerifier) {
+        try {
+          recaptchaVerifier.clear();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+        recaptchaVerifier = null;
+      }
+      throw new Error('Failed to initialize phone verification. Please refresh the page and try again.');
     }
+
     return recaptchaVerifier;
   };
 
@@ -203,8 +259,35 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       // Format phone number (ensure it starts with +)
       const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
 
+      // Validate phone number format (should be E.164 format)
+      if (!/^\+[1-9]\d{1,14}$/.test(formattedPhone)) {
+        throw new Error('Invalid phone number format. Please include country code (e.g., +91 for India)');
+      }
+
+      // Clean up any existing verifier first
+      if (recaptchaVerifier) {
+        try {
+          recaptchaVerifier.clear();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+        recaptchaVerifier = null;
+      }
+
+      // Remove any existing container
+      const existingContainer = document.getElementById('recaptcha-container');
+      if (existingContainer) {
+        existingContainer.remove();
+      }
+
+      // Wait a bit to ensure DOM is ready
+      await new Promise(resolve => setTimeout(resolve, 100));
+
       // Initialize recaptcha
       const verifier = initializeRecaptcha();
+
+      // Wait for reCAPTCHA to be ready - invisible reCAPTCHA needs time to initialize
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       // Send OTP
       confirmationResult = await signInWithPhoneNumber(auth, formattedPhone, verifier);
@@ -212,14 +295,39 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       return true;
     } catch (error: any) {
       console.error('Error sending OTP:', error);
+      console.error('Error code:', error.code);
+      console.error('Error message:', error.message);
+      console.error('Full error object:', JSON.stringify(error, null, 2));
       
       // Clean up recaptcha on error
       if (recaptchaVerifier) {
-        recaptchaVerifier.clear();
+        try {
+          recaptchaVerifier.clear();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
         recaptchaVerifier = null;
       }
       
-      throw new Error(error.message || 'Failed to send OTP');
+      // Provide user-friendly error messages
+      if (error.code === 'auth/invalid-app-credential') {
+        const errorMsg = `Phone authentication configuration error. Please ensure:
+1. 'localhost' is added to Authorized domains in Firebase Console (Authentication → Settings → Authorized domains)
+2. Your API key is not restricted in Google Cloud Console
+3. Phone Authentication is enabled in Firebase Console
+
+For detailed steps, see FIREBASE_PHONE_AUTH_FIX.md`;
+        console.error(errorMsg);
+        throw new Error('Phone authentication is not properly configured. Please check the browser console for detailed instructions.');
+      } else if (error.code === 'auth/invalid-phone-number') {
+        throw new Error('Invalid phone number format. Please include country code (e.g., +91 for India).');
+      } else if (error.code === 'auth/too-many-requests') {
+        throw new Error('Too many requests. Please try again later.');
+      } else if (error.code === 'auth/quota-exceeded') {
+        throw new Error('SMS quota exceeded. Please try again later or contact support.');
+      }
+      
+      throw new Error(error.message || 'Failed to send OTP. Please try again.');
     }
   };
 
@@ -371,12 +479,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         throw new Error('OTP not sent. Please request password reset first.');
       }
 
-      // Verify OTP
-      await confirmationResult.confirm(otp);
-      
       const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
       
-      // Find user by phone
+      // Find user by phone in Firestore to get their email and UID
       const usersRef = collection(db, 'users');
       const q = query(usersRef, where('phone', '==', formattedPhone));
       const querySnapshot = await getDocs(q);
@@ -387,19 +492,115 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       
       const userDoc = querySnapshot.docs[0];
       const userData = userDoc.data();
+      const emailPasswordUserId = userDoc.id; // This is the UID of the email/password account
       
       if (!userData.email) {
         throw new Error('Account not properly set up.');
       }
+
+      // Verify OTP - this signs the user in with phone authentication
+      const result = await confirmationResult.confirm(otp);
+      const phoneAuthUser = result.user;
       
-      // Sign in with email to update password
-      // Note: In production, you'd use Firebase Admin SDK to update password
-      // For now, we'll use the email link method
-      // User needs to click the email link to reset password
-      throw new Error('Please check your email for password reset link. OTP verified successfully.');
+      // Check if the phone auth user has a password provider linked
+      const hasPasswordProvider = phoneAuthUser.providerData.some(
+        provider => provider.providerId === 'password'
+      );
       
+      // Check if the phone auth user's UID matches the email/password account's UID
+      if (phoneAuthUser.uid === emailPasswordUserId && hasPasswordProvider) {
+        // Same user with password provider - can directly update password
+        try {
+          await updatePassword(phoneAuthUser, newPassword);
+          
+          // Sign out and sign in with new password to ensure session is fresh
+          await signOut(auth);
+          await signInWithEmailAndPassword(auth, userData.email, newPassword);
+        } catch (updateError: any) {
+          // If updatePassword fails, fall back to email reset
+          await signOut(auth);
+          await sendPasswordResetEmail(auth, userData.email);
+          
+          // Clean up
+          confirmationResult = null;
+          if (recaptchaVerifier) {
+            try {
+              recaptchaVerifier.clear();
+            } catch (e) {
+              // Ignore cleanup errors
+            }
+            recaptchaVerifier = null;
+          }
+          
+          throw new Error('Password reset email sent. Please check your email to complete the password reset. OTP verified successfully.');
+        }
+      } else {
+        // Different UIDs - phone auth created a separate account
+        // The phone auth user doesn't have the email/password account's password
+        // We need to sign in to the email/password account to update password, but we don't have old password
+        // Solution: Sign out from phone auth and send password reset email
+        await signOut(auth);
+        
+        // Send password reset email - user will get a link to reset password
+        await sendPasswordResetEmail(auth, userData.email);
+        
+        // Clean up
+        confirmationResult = null;
+        if (recaptchaVerifier) {
+          try {
+            recaptchaVerifier.clear();
+          } catch (e) {
+            // Ignore cleanup errors
+          }
+          recaptchaVerifier = null;
+        }
+        
+        throw new Error('Password reset email sent. Please check your email to complete the password reset. OTP verified successfully.');
+      }
+      
+      // Clean up
+      confirmationResult = null;
+      if (recaptchaVerifier) {
+        try {
+          recaptchaVerifier.clear();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+        recaptchaVerifier = null;
+      }
+
+      return true;
     } catch (error: any) {
       console.error('Reset password error:', error);
+      
+      // Clean up on error
+      if (recaptchaVerifier) {
+        try {
+          recaptchaVerifier.clear();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+        recaptchaVerifier = null;
+      }
+      confirmationResult = null;
+      
+      // If error message already contains our custom message, re-throw it
+      if (error.message && error.message.includes('Password reset email sent')) {
+        throw error;
+      }
+      
+      // Provide user-friendly error messages
+      if (error.code === 'auth/weak-password') {
+        throw new Error('Password is too weak. Please choose a stronger password.');
+      } else if (error.code === 'auth/requires-recent-login') {
+        throw new Error('Please verify OTP again to reset password.');
+      } else if (error.code === 'auth/invalid-verification-code' || error.code === 'auth/code-expired') {
+        throw new Error('Invalid or expired OTP. Please request a new one.');
+      } else if (error.code === 'auth/operation-not-allowed') {
+        // Phone auth user doesn't have password - need to link or use email reset
+        throw new Error('Password reset requires email verification. Please check your email for reset instructions.');
+      }
+      
       throw new Error(error.message || 'Failed to reset password');
     }
   };
@@ -431,6 +632,22 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         updateData,
         { merge: true }
       );
+
+      // Refresh user data from Firestore to update the state
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      const userData = userDoc.data();
+
+      const userObj: User = {
+        id: currentUser.uid,
+        email: currentUser.email || userData?.email || undefined,
+        phone: userData?.phone || currentUser.phoneNumber || undefined,
+        name: userData?.name || currentUser.displayName || 'User',
+        role: userData?.role || 'user',
+        photoURL: currentUser.photoURL || userData?.photoURL || undefined,
+      };
+
+      setUser(userObj);
+      localStorage.setItem('user', JSON.stringify(userObj));
     } catch (error: any) {
       console.error('Update profile error:', error);
       throw new Error(error.message || 'Failed to update profile');
@@ -502,8 +719,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       }}
     >
       {children}
-      {/* Hidden container for reCAPTCHA */}
-      <div id="recaptcha-container"></div>
     </AuthContext.Provider>
   );
 };

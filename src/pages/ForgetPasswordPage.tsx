@@ -9,10 +9,14 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
 import { Lock, ArrowLeft } from 'lucide-react';
+import PasswordInput from '@/components/PasswordInput';
 import { formatPhoneNumber, validatePhoneNumber } from '@/services/otpService';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { countryCodes, getDefaultCountry, type CountryCode } from '@/data/countryCodes';
 
 const ForgetPasswordPage = () => {
   const [phone, setPhone] = useState('');
+  const [selectedCountry, setSelectedCountry] = useState<CountryCode>(getDefaultCountry());
   const [otp, setOtp] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -20,6 +24,7 @@ const ForgetPasswordPage = () => {
   const [countdown, setCountdown] = useState(0);
   const [step, setStep] = useState<'phone' | 'otp' | 'password'>('phone');
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
   const [sendingOTP, setSendingOTP] = useState(false);
   const { forgetPassword, resetPassword, sendOTP } = useAuth();
@@ -28,13 +33,17 @@ const ForgetPasswordPage = () => {
   const handleSendOTP = async () => {
     setError('');
     
-    if (!validatePhoneNumber(phone)) {
-      setError('Please enter a valid phone number');
+    // Validate phone number (should have at least 10 digits)
+    const phoneDigits = phone.replace(/\D/g, '');
+    if (phoneDigits.length < 10) {
+      setError('Please enter a valid phone number (at least 10 digits)');
       return;
     }
 
     setSendingOTP(true);
-    const formattedPhone = formatPhoneNumber(phone);
+    // Combine country code with phone number
+    const phoneNumber = phone.startsWith('+') ? phone : `${selectedCountry.dialCode}${phone.replace(/\D/g, '')}`;
+    const formattedPhone = formatPhoneNumber(phoneNumber);
     
     try {
       await forgetPassword(formattedPhone);
@@ -65,19 +74,9 @@ const ForgetPasswordPage = () => {
       return;
     }
 
-    setLoading(true);
-    const formattedPhone = formatPhoneNumber(phone);
-    
-    try {
-      // For now, just verify OTP and move to password step
-      // In production, you'd verify the OTP here
-      await sendOTP(formattedPhone);
-      setStep('password');
-    } catch (err: any) {
-      setError(err.message || 'Invalid OTP. Please try again.');
-    } finally {
-      setLoading(false);
-    }
+    // Just move to password step - OTP will be verified when resetting password
+    // This prevents sending a new OTP which would invalidate the current one
+    setStep('password');
   };
 
   const handleResetPassword = async (e: React.FormEvent) => {
@@ -95,17 +94,21 @@ const ForgetPasswordPage = () => {
     }
 
     setLoading(true);
-    const formattedPhone = formatPhoneNumber(phone);
+    // Combine country code with phone number
+    const phoneNumber = phone.startsWith('+') ? phone : `${selectedCountry.dialCode}${phone.replace(/\D/g, '')}`;
+    const formattedPhone = formatPhoneNumber(phoneNumber);
     
     try {
       await resetPassword(formattedPhone, otp, newPassword);
       // Show success message
-      setError('Password reset email sent! Please check your email to complete the process.');
+      setError('');
+      setSuccess('Password reset successfully! Redirecting to login...');
       setTimeout(() => {
         navigate('/login');
-      }, 3000);
+      }, 2000);
     } catch (err: any) {
       setError(err.message || 'Failed to reset password');
+      setSuccess('');
     } finally {
       setLoading(false);
     }
@@ -139,26 +142,60 @@ const ForgetPasswordPage = () => {
                 <div className="space-y-2">
                   <Label htmlFor="phone">Phone Number</Label>
                   <div className="flex gap-2">
+                    <Select
+                      value={selectedCountry.code}
+                      onValueChange={(value) => {
+                        const country = countryCodes.find(c => c.code === value);
+                        if (country) {
+                          setSelectedCountry(country);
+                        }
+                      }}
+                      disabled={sendingOTP}
+                    >
+                      <SelectTrigger className="w-[140px]">
+                        <SelectValue>
+                          <span className="flex items-center gap-2">
+                            <span>{selectedCountry.flag}</span>
+                            <span>{selectedCountry.dialCode}</span>
+                          </span>
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="max-h-[300px]">
+                        {countryCodes.map((country) => (
+                          <SelectItem key={country.code} value={country.code}>
+                            <span className="flex items-center gap-2">
+                              <span>{country.flag}</span>
+                              <span>{country.dialCode}</span>
+                              <span className="text-muted-foreground">{country.name}</span>
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                     <Input
                       id="phone"
                       type="tel"
-                      placeholder="+1234567890"
+                      placeholder="9876543210"
                       value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
+                      onChange={(e) => {
+                        // Only allow digits
+                        const digits = e.target.value.replace(/\D/g, '');
+                        setPhone(digits);
+                      }}
                       required
                       className="flex-1"
                     />
                     <Button
                       type="button"
                       onClick={handleSendOTP}
-                      disabled={sendingOTP || !phone}
+                      disabled={sendingOTP || phone.length < 10}
                       variant="outline"
                     >
                       {sendingOTP ? 'Sending...' : 'Send OTP'}
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Enter your phone number with country code
+                    Enter your phone number (country code is selected above)
                   </p>
                 </div>
 
@@ -232,21 +269,21 @@ const ForgetPasswordPage = () => {
 
             {step === 'password' && (
               <form onSubmit={handleResetPassword} className="space-y-4">
+                {success && (
+                  <div className="p-3 rounded-lg bg-green-500/10 text-green-600 text-sm">
+                    {success}
+                  </div>
+                )}
                 {error && (
-                  <div className={`p-3 rounded-lg text-sm ${
-                    error.includes('sent') 
-                      ? 'bg-green-500/10 text-green-600' 
-                      : 'bg-destructive/10 text-destructive'
-                  }`}>
+                  <div className="p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
                     {error}
                   </div>
                 )}
 
                 <div className="space-y-2">
                   <Label htmlFor="newPassword">New Password</Label>
-                  <Input
+                  <PasswordInput
                     id="newPassword"
-                    type="password"
                     placeholder="At least 6 characters"
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
@@ -256,9 +293,8 @@ const ForgetPasswordPage = () => {
 
                 <div className="space-y-2">
                   <Label htmlFor="confirmPassword">Confirm Password</Label>
-                  <Input
+                  <PasswordInput
                     id="confirmPassword"
-                    type="password"
                     placeholder="Confirm your password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}

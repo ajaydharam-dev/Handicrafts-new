@@ -1,22 +1,26 @@
 import { useParams, Link } from "react-router-dom";
-import { ChevronRight, Star, Heart, ShoppingBag, Minus, Plus, Check } from "lucide-react";
-import { useState, useMemo } from "react";
+import { ChevronRight, Star, Heart, ShoppingBag, Minus, Plus, Check, Share2 } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { getProductById, categories, Product } from "@/data/categories";
+import { Product, Category, formatPrice } from "@/data/categories";
 import { useWishlist } from "@/contexts/WishlistContext";
 import { useReview } from "@/contexts/ReviewContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
+import { productService, categoryService } from "@/services/firestoreService";
 
 const ProductDetailPage = () => {
   const { productId } = useParams();
-  const result = getProductById(Number(productId));
+  const [product, setProduct] = useState<Product | null>(null);
+  const [category, setCategory] = useState<Category | null>(null);
+  const [relatedProducts, setRelatedProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
   const [quantity, setQuantity] = useState(1);
   const [showReviewForm, setShowReviewForm] = useState(false);
   const [reviewRating, setReviewRating] = useState(5);
@@ -28,23 +32,52 @@ const ProductDetailPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  // Get related products (from same category, excluding current product)
-  const relatedProducts = useMemo(() => {
-    if (!result) return [];
-    const { product, category } = result;
-    const allProducts: Product[] = [];
-    
-    category.subcategories.forEach(subcategory => {
-      allProducts.push(...subcategory.products);
-    });
-    
-    return allProducts
-      .filter(p => p.id !== product.id)
-      .sort(() => Math.random() - 0.5) // Shuffle for variety
-      .slice(0, 4); // Show 4 related products
-  }, [result]);
+  useEffect(() => {
+    const fetchProduct = async () => {
+      if (!productId) return;
+      setLoading(true);
+      try {
+        const prod = await productService.getById(productId);
+        if (prod) {
+          setProduct(prod);
+          // Fetch category
+          const cat = await categoryService.getById(prod.categoryId);
+          if (cat) {
+            setCategory(cat);
+            // Fetch related products from same category
+            const allProducts = await productService.getByCategory(prod.categoryId);
+            const related = allProducts
+              .filter(p => p.id !== prod.id)
+              .sort(() => Math.random() - 0.5)
+              .slice(0, 4);
+            setRelatedProducts(related);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching product:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  if (!result) {
+    fetchProduct();
+  }, [productId]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex flex-col">
+        <Header />
+        <main className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <p className="text-muted-foreground">Loading product...</p>
+          </div>
+        </main>
+        <Footer />
+      </div>
+    );
+  }
+
+  if (!product || !category) {
     return (
       <div className="min-h-screen flex flex-col">
         <Header />
@@ -59,7 +92,7 @@ const ProductDetailPage = () => {
     );
   }
 
-  const { product, category, subcategory } = result;
+  const subcategory = category.subcategories.find(s => s.id === product.subcategoryId);
   const reviews = getProductReviews(product.id);
   const canReview = user ? canUserReview(product.id, user.id) : false;
   const averageRating = reviews.length > 0
@@ -82,6 +115,48 @@ const ProductDetailPage = () => {
       setShowReviewForm(false);
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Failed to submit review');
+    }
+  };
+
+  const handleShare = async () => {
+    const productUrl = `${window.location.origin}/product/${product.id}`;
+    const shareText = `Check out ${product.name} at Damodar Handicrafts! ${productUrl}`;
+
+    // Try Web Share API first (mobile devices)
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: product.name,
+          text: `Check out ${product.name} at Damodar Handicrafts!`,
+          url: productUrl,
+        });
+        toast({
+          title: "Shared!",
+          description: "Product link shared successfully.",
+        });
+        return;
+      } catch (error) {
+        // User cancelled or share failed, fall through to clipboard
+        if ((error as Error).name !== 'AbortError') {
+          console.error('Error sharing:', error);
+        }
+      }
+    }
+
+    // Fallback: Copy to clipboard
+    try {
+      await navigator.clipboard.writeText(shareText);
+      toast({
+        title: "Link Copied!",
+        description: "Product link has been copied to your clipboard.",
+      });
+    } catch (error) {
+      console.error('Error copying to clipboard:', error);
+      toast({
+        title: "Error",
+        description: "Failed to copy link. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -166,9 +241,22 @@ const ProductDetailPage = () => {
 
                 {/* Price */}
                 <div className="mb-6">
-                  <span className="text-4xl font-semibold text-foreground">
-                    ${product.price.toFixed(2)}
-                  </span>
+                  {product.discountPrice ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-3">
+                        <span className="text-4xl font-semibold text-foreground">
+                          {formatPrice(product.discountPrice)}
+                        </span>
+                        <span className="text-xl text-muted-foreground line-through">
+                          {formatPrice(product.price)}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <span className="text-4xl font-semibold text-foreground">
+                      {formatPrice(product.price)}
+                    </span>
+                  )}
                 </div>
 
                 {/* Description */}
@@ -234,6 +322,15 @@ const ProductDetailPage = () => {
                     <Heart className={`h-5 w-5 mr-2 ${isInWishlist(product.id) ? "fill-primary text-primary" : ""}`} />
                     {isInWishlist(product.id) ? "Wishlisted" : "Add to Wishlist"}
                   </Button>
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    className="rounded-full"
+                    onClick={handleShare}
+                  >
+                    <Share2 className="h-5 w-5 mr-2" />
+                    Share
+                  </Button>
                 </div>
               </div>
             </div>
@@ -273,9 +370,22 @@ const ProductDetailPage = () => {
                             <span className="text-sm font-medium">{relatedProduct.rating}</span>
                             <span className="text-sm text-muted-foreground">({relatedProduct.reviews})</span>
                           </div>
-                          <p className="text-xl font-semibold text-foreground">
-                            ${relatedProduct.price.toFixed(2)}
-                          </p>
+                          <div className="flex items-center gap-2">
+                            {relatedProduct.discountPrice ? (
+                              <>
+                                <p className="text-xl font-semibold text-foreground">
+                                  {formatPrice(relatedProduct.discountPrice)}
+                                </p>
+                                <p className="text-sm text-muted-foreground line-through">
+                                  {formatPrice(relatedProduct.price)}
+                                </p>
+                              </>
+                            ) : (
+                              <p className="text-xl font-semibold text-foreground">
+                                {formatPrice(relatedProduct.price)}
+                              </p>
+                            )}
+                          </div>
                         </div>
                         <button
                           onClick={(e) => {

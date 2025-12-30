@@ -1,21 +1,48 @@
+import { useState, useEffect } from "react";
 import Header from "@/components/Header";
 import HeroCarousel from "@/components/HeroCarousel";
 import CategoriesSection from "@/components/CategoriesSection";
 import ProductSection from "@/components/ProductSection";
 import Footer from "@/components/Footer";
+import Marquee from "@/components/Marquee";
 import { getBestSellerProducts, getNewArrivalProducts, getFeaturedProducts } from "@/lib/searchUtils";
 import { useStore } from "@/contexts/StoreContext";
+import { Product } from "@/data/categories";
 
 const Index = () => {
   const { selectedStore } = useStore();
   const storeId = selectedStore?.id || null;
-  const bestSellers = getBestSellerProducts(storeId);
-  const newArrivals = getNewArrivalProducts(storeId);
-  const featuredProducts = getFeaturedProducts(storeId);
+  const [bestSellers, setBestSellers] = useState<Product[]>([]);
+  const [newArrivals, setNewArrivals] = useState<Product[]>([]);
+  const [featuredProducts, setFeaturedProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchProducts = async () => {
+      setLoading(true);
+      try {
+        const [best, newArr, featured] = await Promise.all([
+          getBestSellerProducts(storeId),
+          getNewArrivalProducts(storeId),
+          getFeaturedProducts(storeId)
+        ]);
+        setBestSellers(best);
+        setNewArrivals(newArr);
+        setFeaturedProducts(featured);
+      } catch (error) {
+        console.error('Error fetching products:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchProducts();
+  }, [storeId]);
 
   return (
     <div className="min-h-screen flex flex-col">
       <Header />
+      <Marquee />
       <main className="flex-1">
         <HeroCarousel />
         
